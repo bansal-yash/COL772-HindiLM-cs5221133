@@ -56,6 +56,87 @@ class Positional_Encoding(nn.Module):
         return self.position_encodings[:, :s]
 
 
+class Feed_Forward_Network(nn.Module):
+    def __init__(self, d_model):
+        super().__init__()
+
+        hidden_dim = 4 * d_model
+        self.up = nn.Linear(d_model, hidden_dim, bias=True)
+        self.down = nn.Linear(hidden_dim, d_model, bias=True)
+        self.gelu = nn.GELU()
+
+    def forward(self, x):
+        return self.down(self.gelu(self.up(x)))
+
+
+class Multi_Head_Attention(nn.Module):
+    def __init__(self, d_model, n_heads, d_head, mode, tau):
+        super().__init__()
+
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.d_head = d_head
+        self.mode = mode
+        self.tau = tau
+
+        self.o_mat = nn.Linear(d_model, d_model, bias=False)
+        self.q_mat = nn.Linear(d_model, d_model, bias=False)
+        self.k_mat = nn.Linear(d_model, d_model, bias=False)
+        self.v_mat = nn.Linear(d_model, d_model, bias=False)
+
+    def forward(self, x, attention_mask):
+        B, T, _ = x.shape
+
+        q = self.q_mat(x)
+        k = self.k_mat(x)
+        v = self.v_mat(x)
+
+        q = q.view(B, T, self.n_heads, self.d_head).transpose(1, 2)
+        k = k.view(B, T, self.n_heads, self.d_head).transpose(1, 2)
+        v = v.view(B, T, self.n_heads, self.d_head).transpose(1, 2)
+
+        s = torch.matmul(q, k.transpose(-2, -1)) / torch.sqrt(torch.Tensor(self.d_head))
+
+        if self.mode == "tanh-clipped":
+            s = self.tau * torch.tanh(s)
+
+        full_mask = torch.ones(T, T)
+
+        causal_mask = torch.tril(full_mask)
+        s = s.masked_fill(causal_mask == 0, -torch.inf)
+
+        pad_mask = attention_mask.unsqueeze(1).unsqueeze(2)
+        s = s.masked_fill(pad_mask == 0, -torch.inf)
+
+        attention = torch.softmax(s, dim=-1)
+
+        v = torch.matmul(attention, v)
+        v = v.transpose(1, 2).contiguous().view(B, T, self.d_model)
+        v = self.o_mat(v)
+
+        return v
+
+
+class Transformer_Block(nn.Module):
+    def __init__(self, d_model, n_heads, d_head, mode, tau):
+        super().__init__()
+        self.layer_norm1 = nn.LayerNorm(d_model, elementwise_affine=True)
+        self.layer_norm2 = nn.LayerNorm(d_model, elementwise_affine=True)
+
+        self.ffn = Feed_Forward_Network(d_model)
+        self.multi_head_attention = Multi_Head_Attention(
+            d_model, n_heads, d_head, mode, tau
+        )
+
+    def forward(self, x, attention_mask):
+        after_attention = self.multi_head_attention(self.layer_norm1(x), attention_mask)
+        x = x + after_attention
+
+        after_ffn = self.ffn(self.layer_norm2(x))
+        x = x + after_ffn
+        return x
+
+
 class LanguageModel(nn.Module):
     """
     This is a stub class for the assignment.
@@ -78,11 +159,24 @@ class LanguageModel(nn.Module):
 
         if self.mode == "tanh-clipped":
             self.tau = config["tau"]
+        else:
+            self.tau = None
 
         self.vocab_embedding = Vocab_Embedding(self.vocab_size, self.d_model)
         self.vocab_unembedding = Vocab_Unembedding(self.vocab_size, self.d_model)
 
         self.positional_encoding = Positional_Encoding(self.d_model)
+
+        self.transformer_blocks = nn.ModuleList(
+            [
+                Transformer_Block(
+                    self.d_model, self.n_heads, self.d_head, self.mode, self.tau
+                )
+            ]
+            for i in range(self.n_layers)
+        )
+
+        self.final_layer_norm = nn.LayerNorm(self.d_model, elementwise_affine=True)
 
     def set_weights(self, weights: Dict[str, Any]):
         """
@@ -98,9 +192,9 @@ class LanguageModel(nn.Module):
             self.vocab_embedding.set_weights(weights["W_vocab"])
             self.vocab_unembedding.set_weights(weights["W_devocab"])
 
-        # print(weights.keys())
-        # for k in weights.keys():
-        #     print(k + ": ", weights[k].shape)
+        print(weights.keys())
+        for k in weights.keys():
+            print(k + ": ", weights[k].shape)
 
     def forward(
         self, input_ids: torch.Tensor, attention_mask: torch.Tensor
