@@ -6,36 +6,26 @@ from typing import Any, Dict, List
 class Vocab_Embedding(nn.Module):
     def __init__(self, vocab_size, d_model):
         super().__init__()
-        self.vocab_size = vocab_size
-        self.d_model = d_model
-        self.vocab_embed = nn.Parameter(torch.empty(d_model, vocab_size))
+        self.vocab_embed = nn.Embedding(vocab_size, d_model)
 
     def set_weights(self, vocab_embed_weights: torch.Tensor):
-        assert self.vocab_embed.shape == vocab_embed_weights.shape
-
-        self.vocab_embed.data = vocab_embed_weights
+        self.vocab_embed.weight.copy_(vocab_embed_weights.T.contiguous())
 
     def forward(self, input_ids: torch.Tensor):
-        embeds = self.vocab_embed[:, input_ids]
-        embeds = embeds.permute(1, 2, 0)
+        embeds = self.vocab_embed(input_ids)
         return embeds
 
 
 class Vocab_Unembedding(nn.Module):
     def __init__(self, vocab_size, d_model):
         super().__init__()
-        self.vocab_size = vocab_size
-        self.d_model = d_model
-        self.vocab_unembed = nn.Parameter(torch.empty(d_model, vocab_size))
+        self.vocab_unembed = nn.Linear(d_model, vocab_size, bias=False)
 
     def set_weights(self, vocab_unembed_weights: torch.Tensor):
-        assert self.vocab_unembed.shape == vocab_unembed_weights.shape
-
-        self.vocab_unembed.data = vocab_unembed_weights
+        self.vocab_unembed.weight.copy_(vocab_unembed_weights.T.contiguous())
 
     def forward(self, hidden_state: torch.Tensor):
-
-        logits = hidden_state @ self.vocab_unembed
+        logits = self.vocab_unembed(hidden_state)
         return logits
 
 
@@ -75,8 +65,9 @@ class LanguageModel(nn.Module):
             - weights: A dictionary containing the model's weights. The structure of this dictionary will depend on how you design your model.
         """
 
-        self.vocab_embedding.set_weights(weights["W_vocab"])
-        self.vocab_unembedding.set_weights(weights["W_devocab"])
+        with torch.no_grad():
+            self.vocab_embedding.set_weights(weights["W_vocab"])
+            self.vocab_unembedding.set_weights(weights["W_devocab"])
 
         # print(weights.keys())
         # for k in weights.keys():
