@@ -29,6 +29,33 @@ class Vocab_Unembedding(nn.Module):
         return logits
 
 
+class Positional_Encoding(nn.Module):
+    def __init__(self, d_model):
+
+        super().__init__()
+        self.max_len = 2048  # Fix this
+        self.d_model = d_model
+
+        position_encodings = torch.zeros((self.max_len, d_model))
+        positions = torch.arange(0, self.max_len).unsqueeze(1)
+
+        base = torch.tensor(10000.0)
+        two_i = torch.arange(0, d_model, 2)
+        base_pow_2i_by_d = torch.exp(-(two_i / d_model) * (torch.log(base)))
+
+        pos_into_exp = positions * base_pow_2i_by_d
+        position_encodings[:, 0::2] = torch.sin(pos_into_exp)
+        position_encodings[:, 1::2] = torch.cos(pos_into_exp)
+
+        position_encodings = position_encodings.unsqueeze(0)
+
+        self.register_buffer("position_encodings", position_encodings)
+
+    def forward(self, input_ids: torch.Tensor):
+        s = input_ids.shape[1]
+        return self.position_encodings[:, :s]
+
+
 class LanguageModel(nn.Module):
     """
     This is a stub class for the assignment.
@@ -54,6 +81,8 @@ class LanguageModel(nn.Module):
 
         self.vocab_embedding = Vocab_Embedding(self.vocab_size, self.d_model)
         self.vocab_unembedding = Vocab_Unembedding(self.vocab_size, self.d_model)
+
+        self.positional_encoding = Positional_Encoding(self.d_model)
 
     def set_weights(self, weights: Dict[str, Any]):
         """
@@ -89,6 +118,9 @@ class LanguageModel(nn.Module):
         """
 
         x = self.vocab_embedding(input_ids)
+
+        x = x + self.positional_encoding(input_ids)
+
         logits = self.vocab_unembedding(x)
 
         return logits
