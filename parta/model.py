@@ -8,9 +8,6 @@ class Vocab_Embedding(nn.Module):
         super().__init__()
         self.vocab_embed = nn.Embedding(vocab_size, d_model)
 
-    def set_weights(self, vocab_embed_weights: torch.Tensor):
-        self.vocab_embed.weight.copy_(vocab_embed_weights.T.contiguous())
-
     def forward(self, input_ids: torch.Tensor):
         embeds = self.vocab_embed(input_ids)
         return embeds
@@ -21,9 +18,6 @@ class Vocab_Unembedding(nn.Module):
         super().__init__()
         self.vocab_unembed = nn.Linear(d_model, vocab_size, bias=False)
 
-    def set_weights(self, vocab_unembed_weights: torch.Tensor):
-        self.vocab_unembed.weight.copy_(vocab_unembed_weights.T.contiguous())
-
     def forward(self, hidden_state: torch.Tensor):
         logits = self.vocab_unembed(hidden_state)
         return logits
@@ -31,9 +25,8 @@ class Vocab_Unembedding(nn.Module):
 
 class Positional_Encoding(nn.Module):
     def __init__(self, d_model):
-
         super().__init__()
-        self.max_len = 2048  # Fix this
+        self.max_len = 2048  # Confirm This
         self.d_model = d_model
 
         position_encodings = torch.zeros((self.max_len, d_model))
@@ -189,12 +182,54 @@ class LanguageModel(nn.Module):
         """
 
         with torch.no_grad():
-            self.vocab_embedding.set_weights(weights["W_vocab"])
-            self.vocab_unembedding.set_weights(weights["W_devocab"])
+            self.vocab_embedding.vocab_embed.weight.copy_(
+                weights["W_vocab"].T.contiguous()
+            )
+            self.vocab_unembedding.vocab_unembed.weight.copy_(
+                weights["W_devocab"].T.contiguous()
+            )
 
-        print(weights.keys())
-        for k in weights.keys():
-            print(k + ": ", weights[k].shape)
+            self.final_layer_norm.weight.copy_(weights["gamma_final"])
+            self.final_layer_norm.bias.copy_(weights["beta_final"])
+
+            for i in range(1, self.n_layers + 1):
+                transformer_block = self.transformer_blocks[i - 1]
+                transformer_block.layer_norm1.weight.copy_(weights[f"gamma_{i}_1"])
+                transformer_block.layer_norm1.bias.copy_(weights[f"beta_{i}_1"])
+                transformer_block.layer_norm2.weight.copy_(weights[f"gamma_{i}_2"])
+                transformer_block.layer_norm2.bias.copy_(weights[f"beta_{i}_2"])
+
+                transformer_block.ffn.up.weight.copy_(weights[f"W_{i}_up"].T)
+                transformer_block.ffn.up.bias.copy_(weights[f"b_{i}_up"])
+                transformer_block.ffn.down.weight.copy_(weights[f"W_{i}_down"].T)
+                transformer_block.ffn.down.bias.copy_(weights[f"b_{i}_down"])
+
+                all_q_weights = []
+                all_k_weights = []
+                all_v_weights = []
+
+                for h in range(1, self.n_heads + 1):
+                    all_q_weights.append(weights[f"W_{i}_Q_{h}"])
+                    all_k_weights.append(weights[f"W_{i}_K_{h}"])
+                    all_v_weights.append(weights[f"W_{i}_V_{h}"])
+
+                all_q_weights = torch.cat(all_q_weights, dim=0)
+                all_k_weights = torch.cat(all_k_weights, dim=0)
+                all_v_weights = torch.cat(all_v_weights, dim=0)
+                all_o_weights = weights[f"W_{i}_O"]
+
+                transformer_block.multi_head_attention.o_mat.weight.copy_(
+                    all_o_weights.T
+                )
+                transformer_block.multi_head_attention.q_mat.weight.copy_(
+                    all_q_weights.T
+                )
+                transformer_block.multi_head_attention.k_mat.weight.copy_(
+                    all_k_weights.T
+                )
+                transformer_block.multi_head_attention.v_mat.weight.copy_(
+                    all_v_weights.T
+                )
 
     def forward(
         self, input_ids: torch.Tensor, attention_mask: torch.Tensor
@@ -217,6 +252,8 @@ class LanguageModel(nn.Module):
 
         for transfomer_block in self.transformer_blocks:
             x = transfomer_block(x, attention_mask)
+
+        x = self.final_layer_norm(x)
 
         logits = self.vocab_unembedding(x)
 
