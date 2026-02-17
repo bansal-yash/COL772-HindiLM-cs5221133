@@ -95,7 +95,7 @@ class Multi_Head_Attention(nn.Module):
         k = k.view(B, T, self.n_heads, self.d_head).transpose(1, 2)
         v = v.view(B, T, self.n_heads, self.d_head).transpose(1, 2)
 
-        s = torch.matmul(q, k.transpose(-2, -1)) / torch.sqrt(torch.Tensor(self.d_head))
+        s = torch.matmul(q, k.transpose(-2, -1)) / self.d_head ** (1 / 2)
 
         if self.mode == "tanh-clipped":
             s = self.tau * torch.tanh(s)
@@ -172,8 +172,8 @@ class LanguageModel(nn.Module):
                 Transformer_Block(
                     self.d_model, self.n_heads, self.d_head, self.mode, self.tau
                 )
+                for i in range(self.n_layers)
             ]
-            for i in range(self.n_layers)
         )
 
         self.final_layer_norm = nn.LayerNorm(self.d_model, elementwise_affine=True)
@@ -214,6 +214,9 @@ class LanguageModel(nn.Module):
         x = self.vocab_embedding(input_ids)
 
         x = x + self.positional_encoding(input_ids)
+
+        for transfomer_block in self.transformer_blocks:
+            x = transfomer_block(x, attention_mask)
 
         logits = self.vocab_unembedding(x)
 
