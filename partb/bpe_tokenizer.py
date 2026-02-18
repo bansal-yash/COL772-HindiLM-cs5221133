@@ -1,24 +1,45 @@
 class BPETokenizer:
     def __init__(self, vocab_size, special_tokens=None):
-        raise NotImplementedError("BPETokenizer initialization not implemented yet.")
+        self.vocab_size = vocab_size
+        if special_tokens == None:
+            special_tokens = ["<|PAD|>", "<|UNK|>", "<|SOS|>", "<|EOS|>"]
+
+        self.special_tokens = special_tokens
+
+        self.token_to_id = {}
+        self.id_to_token = {}
+
+        for i in range(len(special_tokens)):
+            self.token_to_id[special_tokens[i]] = i
+            self.id_to_token[i] = special_tokens[i]
+
+        print(self.token_to_id)
+        print(self.id_to_token)
 
     def train(self, corpus):
-        raise NotImplementedError("Training method not implemented yet.")
-    
+
+        return
+
     def encode(self, text):
-        raise NotImplementedError("Encoding method not implemented yet.")
+
+        return
 
     def decode(self, token_ids):
-        raise NotImplementedError("Decoding method not implemented yet.")
+
+        return
 
     def save(self, filepath):
-        raise NotImplementedError("Save method not implemented yet.")
+
+        return
 
     def load(self, filepath):
-        raise NotImplementedError("Load method not implemented yet.")
-    
+
+        return
+
     def get_vocab_size(self):
-        raise NotImplementedError("Get vocab size method not implemented yet.")
-    
+
+        return
+
     def get_unk_id(self):
-        raise NotImplementedError("Get unk id method not implemented yet.")
+
+        return
