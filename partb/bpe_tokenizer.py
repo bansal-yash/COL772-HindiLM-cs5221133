@@ -22,8 +22,8 @@ class BPETokenizer:
     def cons_full_vocab(self, corpus):
         curr_id = len(self.token_to_id)
 
-        self.token_to_id["<w>"] = curr_id
-        self.id_to_token[curr_id] = "<w>"
+        self.token_to_id["<|w|>"] = curr_id
+        self.id_to_token[curr_id] = "<|w|>"
         curr_id += 1
 
         for sentence in corpus:
@@ -39,7 +39,7 @@ class BPETokenizer:
         for sentence in corpus:
             words = sentence.split()
             for word in words:
-                word_tuple = tuple(word) + ("<w>",)
+                word_tuple = tuple(word) + ("<|w|>",)
 
                 if word_tuple in self.word_freqs:
                     self.word_freqs[word_tuple] += 1
@@ -91,7 +91,6 @@ class BPETokenizer:
         return best_pair_token
 
     def train(self, corpus):
-
         self.cons_full_vocab(corpus)
 
         self.word_freqs = {}
@@ -110,20 +109,36 @@ class BPETokenizer:
 
         print(f"Tokenizer trained till vocab size of {len(self.token_to_id)}")
 
-        print(self.token_to_id)
-        print(self.id_to_token)
-        print(self.merge_rules)
+        # print(self.token_to_id)
+        # print(self.id_to_token)
+        # print(self.merge_rules)
 
     def encode(self, text):
         tokens = [self.token_to_id["<|SOS|>"]]
 
-        for char in text:
-            if char == " ":
-                tokens.append(self.token_to_id["<w>"])
-            elif char in self.token_to_id:
-                tokens.append(self.token_to_id[char])
-            else:
-                tokens.append(self.get_unk_id())
+        words = text.split()
+        for word in words:
+            word_tuple = tuple(word) + ("<|w|>",)
+            for rule in self.merge_rules:
+                new_word_list = []
+                i = 0
+                l = len(word_tuple)
+
+                while i < l:
+                    if i < l - 1 and (word_tuple[i], word_tuple[i + 1]) == rule:
+                        new_word_list.append(rule[0] + rule[1])
+                        i += 2
+                    else:
+                        new_word_list.append(word_tuple[i])
+                        i += 1
+
+                word_tuple = tuple(new_word_list)
+
+            for token in word_tuple:
+                if token in self.token_to_id:
+                    tokens.append(self.token_to_id[token])
+                else:
+                    tokens.append(self.get_unk_id())
 
         tokens.append(self.token_to_id["<|EOS|>"])
         return tokens
@@ -133,14 +148,15 @@ class BPETokenizer:
         for id in token_ids:
             token = self.id_to_token[id]
 
-            if token == "<w>":
-                tokens.append(" ")
-            elif token in self.special_tokens:
+            if token in self.special_tokens:
                 continue
             else:
                 tokens.append(token)
 
-        return "".join(tokens)
+        sentence = "".join(tokens)
+        sentence = sentence.replace("<|w|>", " ")
+
+        return sentence
 
     def save(self, filepath):
 
