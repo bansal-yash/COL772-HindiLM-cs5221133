@@ -1,4 +1,5 @@
-from pprint import pprint
+import os
+import json
 
 
 class BPETokenizer:
@@ -8,7 +9,7 @@ class BPETokenizer:
             special_tokens = ["<|PAD|>", "<|UNK|>", "<|SOS|>", "<|EOS|>"]
 
         self.special_tokens = special_tokens
-
+        self.eow_token = "<|w|>"
         self.token_to_id = {}
         self.id_to_token = {}
 
@@ -16,14 +17,13 @@ class BPETokenizer:
             self.token_to_id[token] = id
             self.id_to_token[id] = token
 
-        self.word_freqs: dict[tuple[str], int] = {}
         self.merge_rules = []
 
     def cons_full_vocab(self, corpus):
         curr_id = len(self.token_to_id)
 
-        self.token_to_id["<|w|>"] = curr_id
-        self.id_to_token[curr_id] = "<|w|>"
+        self.token_to_id[self.eow_token] = curr_id
+        self.id_to_token[curr_id] = self.eow_token
         curr_id += 1
 
         for sentence in corpus:
@@ -35,21 +35,21 @@ class BPETokenizer:
                     self.id_to_token[curr_id] = char
                     curr_id += 1
 
-    def fill_word_freqs(self, corpus):
+    def fill_word_freqs(self, corpus, word_freqs):
         for sentence in corpus:
             words = sentence.split()
             for word in words:
-                word_tuple = tuple(word) + ("<|w|>",)
+                word_tuple = tuple(word) + (self.eow_token,)
 
-                if word_tuple in self.word_freqs:
-                    self.word_freqs[word_tuple] += 1
+                if word_tuple in word_freqs:
+                    word_freqs[word_tuple] += 1
                 else:
-                    self.word_freqs[word_tuple] = 1
+                    word_freqs[word_tuple] = 1
 
-    def train_one_iteration(self):
+    def train_one_iteration(self, word_freqs):
         pair_freqs: dict[tuple[str], int] = {}
 
-        for word_tuple, word_freq in self.word_freqs.items():
+        for word_tuple, word_freq in word_freqs.items():
             l = len(word_tuple)
             for i in range(l - 1):
                 pair = (word_tuple[i], word_tuple[i + 1])
@@ -59,14 +59,14 @@ class BPETokenizer:
                     pair_freqs[pair] = word_freq
 
         if not pair_freqs:
-            return None
+            return None, word_freqs
 
         best_pair = max(pair_freqs, key=pair_freqs.get)
         self.merge_rules.append(best_pair)
         best_pair_token = best_pair[0] + best_pair[1]
 
         new_word_freqs: dict[tuple[str], int] = {}
-        for word_tuple, word_freq in self.word_freqs.items():
+        for word_tuple, word_freq in word_freqs.items():
             new_word_list = []
             i = 0
             l = len(word_tuple)
@@ -86,20 +86,18 @@ class BPETokenizer:
             else:
                 new_word_freqs[new_word_tuple] = word_freq
 
-        self.word_freqs = new_word_freqs
-
-        return best_pair_token
+        return best_pair_token, new_word_freqs
 
     def train(self, corpus):
         self.cons_full_vocab(corpus)
 
-        self.word_freqs = {}
-        self.fill_word_freqs(corpus)
+        word_freqs: dict[tuple[str], int] = {}
+        self.fill_word_freqs(corpus, word_freqs)
 
-        print(len(self.word_freqs))
+        print(len(word_freqs))
 
         while len(self.token_to_id) < self.vocab_size:
-            new_token = self.train_one_iteration()
+            new_token, word_freqs = self.train_one_iteration(word_freqs)
 
             if new_token is None:
                 break
@@ -109,16 +107,12 @@ class BPETokenizer:
 
         print(f"Tokenizer trained till vocab size of {len(self.token_to_id)}")
 
-        # print(self.token_to_id)
-        # print(self.id_to_token)
-        # print(self.merge_rules)
-
     def encode(self, text):
         tokens = [self.token_to_id["<|SOS|>"]]
 
         words = text.split()
         for word in words:
-            word_tuple = tuple(word) + ("<|w|>",)
+            word_tuple = tuple(word) + (self.eow_token,)
             for rule in self.merge_rules:
                 new_word_list = []
                 i = 0
@@ -154,17 +148,35 @@ class BPETokenizer:
                 tokens.append(token)
 
         sentence = "".join(tokens)
-        sentence = sentence.replace("<|w|>", " ")
+        sentence = sentence.replace(self.eow_token, " ")
 
         return sentence
 
     def save(self, filepath):
+        os.makedirs(filepath, exist_ok=True)
+        save_path = os.path.join(filepath, "bpe_tokenizer.json")
 
-        return
+        save_data = {
+            "special_tokens": self.special_tokens,
+            "eow_token": self.eow_token,
+            "token_to_id": self.token_to_id,
+            "merge_rules": [list(pair) for pair in self.merge_rules],
+        }
+
+        with open(save_path, "w", encoding="utf-8") as f:
+            json.dump(save_data, f, ensure_ascii=False, indent=4)
 
     def load(self, filepath):
+        save_path = os.path.join(filepath, "bpe_tokenizer.json")
+        with open(save_path, "r", encoding="utf-8") as f:
+            saved_data = json.load(f)
 
-        return
+        self.special_tokens = saved_data["special_tokens"]
+        self.eow_token = saved_data["eow_token"]
+        self.token_to_id = saved_data["token_to_id"]
+        self.id_to_token = {int(v): k for k, v in self.token_to_id.items()}
+        self.vocab_size = len(self.token_to_id)
+        self.merge_rules = [tuple(pair) for pair in saved_data["merge_rules"]]
 
     def get_vocab_size(self):
         return len(self.token_to_id)
