@@ -150,7 +150,7 @@ class BPETokenizer:
         sentence = "".join(tokens)
         sentence = sentence.replace(self.eow_token, " ")
 
-        return sentence
+        return sentence.rstrip()
 
     def save(self, filepath):
         os.makedirs(filepath, exist_ok=True)
