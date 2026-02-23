@@ -13,7 +13,7 @@ class BPETokenizer:
         self.token_to_id = {}
         self.id_to_token = {}
 
-        for id, token in enumerate(special_tokens):
+        for id, token in enumerate(special_tokens + [self.eow_token]):
             self.token_to_id[token] = id
             self.id_to_token[id] = token
 
@@ -21,10 +21,6 @@ class BPETokenizer:
 
     def cons_full_vocab(self, corpus):
         curr_id = len(self.token_to_id)
-
-        self.token_to_id[self.eow_token] = curr_id
-        self.id_to_token[curr_id] = self.eow_token
-        curr_id += 1
 
         for sentence in corpus:
             for char in sentence:
@@ -93,8 +89,6 @@ class BPETokenizer:
 
         word_freqs: dict[tuple[str], int] = {}
         self.fill_word_freqs(corpus, word_freqs)
-
-        print(len(word_freqs))
 
         while len(self.token_to_id) < self.vocab_size:
             new_token, word_freqs = self.train_one_iteration(word_freqs)

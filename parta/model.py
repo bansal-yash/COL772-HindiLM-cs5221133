@@ -46,7 +46,7 @@ class Positional_Encoding(nn.Module):
 
     def forward(self, input_ids: torch.Tensor):
         s = input_ids.shape[1]
-        return self.position_encodings[:, :s]
+        return self.position_encodings[:, :s].to(input_ids.device)
 
 
 class Feed_Forward_Network(nn.Module):
@@ -93,12 +93,14 @@ class Multi_Head_Attention(nn.Module):
         if self.mode == "tanh-clipped":
             s = self.tau * torch.tanh(s)
 
-        full_mask = torch.ones(T, T)
+        device = x.device
+
+        full_mask = torch.ones(T, T, device=device, dtype=torch.bool)
 
         causal_mask = torch.tril(full_mask)
         s = s.masked_fill(causal_mask == 0, -torch.inf)
 
-        pad_mask = attention_mask.unsqueeze(1).unsqueeze(2)
+        pad_mask = attention_mask.unsqueeze(1).unsqueeze(2).to(device).bool()
         s = s.masked_fill(pad_mask == 0, -torch.inf)
 
         attention = torch.softmax(s, dim=-1)
@@ -294,14 +296,18 @@ def collate_fn(batch: Dict[str, List[torch.tensor]]) -> Dict[str, torch.Tensor]:
         padded_input_ids = torch.cat(
             [
                 input_ids,
-                torch.full((pad_len,), PAD_ID, dtype=input_ids.dtype),
+                torch.full(
+                    (pad_len,), PAD_ID, dtype=input_ids.dtype, device=input_ids.device
+                ),
             ]
         )
 
         padded_attention_mask = torch.cat(
             [
                 attention_mask,
-                torch.zeros(pad_len, dtype=attention_mask.dtype),
+                torch.zeros(
+                    pad_len, dtype=attention_mask.dtype, device=attention_mask.device
+                ),
             ]
         )
 
