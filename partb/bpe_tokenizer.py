@@ -162,6 +162,11 @@ class BPETokenizer:
 
     def load(self, filepath):
         save_path = os.path.join(filepath, "bpe_tokenizer.json")
+
+        if not os.path.exists(save_path):
+            print(f"Tokenizer file not found at: {save_path}")
+            return False
+
         with open(save_path, "r", encoding="utf-8") as f:
             saved_data = json.load(f)
 
@@ -171,6 +176,8 @@ class BPETokenizer:
         self.id_to_token = {int(v): k for k, v in self.token_to_id.items()}
         self.vocab_size = len(self.token_to_id)
         self.merge_rules = [tuple(pair) for pair in saved_data["merge_rules"]]
+
+        return True
 
     def get_vocab_size(self):
         return len(self.token_to_id)

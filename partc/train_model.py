@@ -10,7 +10,7 @@ from torch.utils.data import Dataset, DataLoader
 from typing import Dict, List
 
 from partb.bpe_tokenizer import BPETokenizer
-from parta.model import LanguageModel
+from parta.model import LanguageModel, MAX_SEQ_LEN
 
 # You can also create additional files in this directory and import them here if needed.
 # For example, the line below import a dummy function from utils.py file.
@@ -59,7 +59,7 @@ class LMDataset(Dataset):
         for sentence in tqdm(corpus):
             tokens = tokenizer.encode(sentence)
             if len(tokens) > 1:
-                self.data.append(torch.tensor(tokens, dtype=torch.long))
+                self.data.append(torch.tensor(tokens[:MAX_SEQ_LEN], dtype=torch.long))
 
     def __len__(self):
         return len(self.data)
@@ -250,7 +250,11 @@ def main(args):
 
     # Loading the saved tokenizer
     tokenizer = BPETokenizer(vocab_size=None)
-    tokenizer.load(args.tokenizer_path)
+    tokenizer_loaded = tokenizer.load(args.tokenizer_path)
+
+    if not tokenizer_loaded:
+        print("Please train the tokenizer before loading and training the model.")
+        return
 
     CONFIG["vocab_size"] = tokenizer.get_vocab_size()
     print(CONFIG)

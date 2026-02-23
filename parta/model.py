@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 from typing import Any, Dict, List
 
+MAX_SEQ_LEN = 2048  # Confirm This
+
 
 class Vocab_Embedding(nn.Module):
     def __init__(self, vocab_size, d_model):
@@ -26,7 +28,7 @@ class Vocab_Unembedding(nn.Module):
 class Positional_Encoding(nn.Module):
     def __init__(self, d_model):
         super().__init__()
-        self.max_len = 2048  # Confirm This
+        self.max_len = MAX_SEQ_LEN
         self.d_model = d_model
 
         position_encodings = torch.zeros((self.max_len, d_model))
@@ -104,10 +106,12 @@ class Multi_Head_Attention(nn.Module):
         s = s.masked_fill(pad_mask == 0, -torch.inf)
 
         attention = torch.softmax(s, dim=-1)
+        attention = torch.nan_to_num(attention, nan=0.0)
 
         v = torch.matmul(attention, v)
         v = v.transpose(1, 2).contiguous().view(B, T, self.d_model)
         v = self.o_mat(v)
+        v = v * attention_mask.unsqueeze(-1).float()
 
         return v
 
@@ -142,9 +146,9 @@ class LanguageModel(nn.Module):
         """
         Build the LanguageModel based on the config.
         """
-        self.config = config
         super().__init__()
 
+        self.config = config
         self.d_model = config["d_model"]
         self.n_heads = config["n_heads"]
         self.d_head = config["d_head"]
