@@ -48,7 +48,7 @@ class Positional_Encoding(nn.Module):
 
     def forward(self, input_ids: torch.Tensor):
         s = input_ids.shape[1]
-        return self.position_encodings[:, :s].to(input_ids.device)
+        return self.position_encodings[:, :s]
 
 
 class Feed_Forward_Network(nn.Module):
@@ -73,18 +73,18 @@ class Multi_Head_Attention(nn.Module):
         self.d_head = d_head
         self.mode = mode
         self.tau = tau
+        self.tanh_clip = mode == "tanh-clipped"
 
         self.o_mat = nn.Linear(d_model, d_model, bias=False)
-        self.q_mat = nn.Linear(d_model, d_model, bias=False)
-        self.k_mat = nn.Linear(d_model, d_model, bias=False)
-        self.v_mat = nn.Linear(d_model, d_model, bias=False)
+        self.qkv_mat = nn.Linear(d_model, 3 * d_model, bias=False)
+
+        causal = torch.tril(torch.ones(MAX_SEQ_LEN, MAX_SEQ_LEN, dtype=torch.bool))
+        self.register_buffer("causal_mask", causal)
 
     def forward(self, x, attention_mask):
         B, T, _ = x.shape
 
-        q = self.q_mat(x)
-        k = self.k_mat(x)
-        v = self.v_mat(x)
+        q, k, v = self.qkv_mat(x).split(self.d_model, dim=-1)
 
         q = q.view(B, T, self.n_heads, self.d_head).transpose(1, 2)
         k = k.view(B, T, self.n_heads, self.d_head).transpose(1, 2)
@@ -92,26 +92,22 @@ class Multi_Head_Attention(nn.Module):
 
         s = torch.matmul(q, k.transpose(-2, -1)) / self.d_head ** (1 / 2)
 
-        if self.mode == "tanh-clipped":
+        if self.tanh_clip:
             s = self.tau * torch.tanh(s)
 
-        device = x.device
+        causal_mask = self.causal_mask[:T, :T]
 
-        full_mask = torch.ones(T, T, device=device, dtype=torch.bool)
-
-        causal_mask = torch.tril(full_mask)
         s = s.masked_fill(causal_mask == 0, -torch.inf)
 
-        pad_mask = attention_mask.unsqueeze(1).unsqueeze(2).to(device).bool()
+        pad_mask = attention_mask.bool().view(B, 1, 1, T)
         s = s.masked_fill(pad_mask == 0, -torch.inf)
 
         attention = torch.softmax(s, dim=-1)
-        attention = torch.nan_to_num(attention, nan=0.0)
 
         v = torch.matmul(attention, v)
-        v = v.transpose(1, 2).contiguous().view(B, T, self.d_model)
+        v = v.transpose(1, 2).reshape(B, T, self.d_model)
         v = self.o_mat(v)
-        v = v * attention_mask.unsqueeze(-1).float()
+        v = v * pad_mask.squeeze(1).transpose(-1, -2).float()
 
         return v
 
@@ -210,31 +206,26 @@ class LanguageModel(nn.Module):
                 transformer_block.ffn.down.weight.copy_(weights[f"W_{i}_down"].T)
                 transformer_block.ffn.down.bias.copy_(weights[f"b_{i}_down"])
 
-                all_q_weights = []
-                all_k_weights = []
-                all_v_weights = []
-
-                for h in range(1, self.n_heads + 1):
-                    all_q_weights.append(weights[f"W_{i}_Q_{h}"])
-                    all_k_weights.append(weights[f"W_{i}_K_{h}"])
-                    all_v_weights.append(weights[f"W_{i}_V_{h}"])
-
-                all_q_weights = torch.cat(all_q_weights, dim=0)
-                all_k_weights = torch.cat(all_k_weights, dim=0)
-                all_v_weights = torch.cat(all_v_weights, dim=0)
                 all_o_weights = weights[f"W_{i}_O"]
-
                 transformer_block.multi_head_attention.o_mat.weight.copy_(
                     all_o_weights.T
                 )
-                transformer_block.multi_head_attention.q_mat.weight.copy_(
-                    all_q_weights.T
+
+                all_q_weights = torch.cat(
+                    [weights[f"W_{i}_Q_{h}"] for h in range(1, self.n_heads + 1)], dim=0
+                ).T
+                all_k_weights = torch.cat(
+                    [weights[f"W_{i}_K_{h}"] for h in range(1, self.n_heads + 1)], dim=0
+                ).T
+                all_v_weights = torch.cat(
+                    [weights[f"W_{i}_V_{h}"] for h in range(1, self.n_heads + 1)], dim=0
+                ).T
+                all_qkv_weights = torch.cat(
+                    [all_q_weights, all_k_weights, all_v_weights], dim=0
                 )
-                transformer_block.multi_head_attention.k_mat.weight.copy_(
-                    all_k_weights.T
-                )
-                transformer_block.multi_head_attention.v_mat.weight.copy_(
-                    all_v_weights.T
+
+                transformer_block.multi_head_attention.qkv_mat.weight.copy_(
+                    all_qkv_weights
                 )
 
     def forward(
