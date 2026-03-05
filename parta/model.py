@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from typing import Any, Dict, List
 
-MAX_SEQ_LEN = 2048  # Confirm This
+MAX_SEQ_LEN = 768
 
 
 class Vocab_Embedding(nn.Module):
