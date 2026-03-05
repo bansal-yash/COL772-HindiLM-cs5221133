@@ -1,8 +1,9 @@
 import torch
 import torch.nn as nn
+from torch.nn.utils.rnn import pad_sequence
 from typing import Any, Dict, List
 
-MAX_SEQ_LEN = 768
+MAX_SEQ_LEN = 512
 
 
 class Vocab_Embedding(nn.Module):
@@ -48,6 +49,24 @@ class Positional_Encoding(nn.Module):
 
     def forward(self, input_ids: torch.Tensor):
         s = input_ids.shape[1]
+
+        if s > self.max_len:
+            positional_encodings = torch.zeros(
+                (s, self.d_model), device=input_ids.device
+            )
+            positions = torch.arange(0, s, device=input_ids.device).unsqueeze(1)
+
+            base = torch.tensor(10000.0, device=input_ids.device)
+            two_i = torch.arange(0, self.d_model, 2, device=input_ids.device)
+            base_pow_2i_by_d = torch.exp(-(two_i / self.d_model) * (torch.log(base)))
+
+            pos_into_exp = positions * base_pow_2i_by_d
+            positional_encodings[:, 0::2] = torch.sin(pos_into_exp)
+            positional_encodings[:, 1::2] = torch.cos(pos_into_exp)
+
+            positional_encodings = positional_encodings.unsqueeze(0)
+            return positional_encodings
+
         return self.position_encodings[:, :s]
 
 
@@ -95,7 +114,12 @@ class Multi_Head_Attention(nn.Module):
         if self.tanh_clip:
             s = self.tau * torch.tanh(s)
 
-        causal_mask = self.causal_mask[:T, :T]
+        if T > MAX_SEQ_LEN:
+            causal_mask = torch.tril(
+                torch.ones(T, T, dtype=torch.bool, device=x.device)
+            )
+        else:
+            causal_mask = self.causal_mask[:T, :T]
 
         s = s.masked_fill(causal_mask == 0, -torch.inf)
 
@@ -280,38 +304,18 @@ def collate_fn(batch: Dict[str, List[torch.tensor]]) -> Dict[str, torch.Tensor]:
 
     input_ids_list = batch["input_ids"]
     attention_mask_list = batch["attention_mask"]
-    max_seq_len = max(input_ids.shape[0] for input_ids in input_ids_list)
 
-    batch_input_ids = []
-    batch_attention_mask = []
+    batch_input_ids = pad_sequence(
+        input_ids_list, batch_first=True, padding_value=PAD_ID
+    )
 
-    for input_ids, attention_mask in zip(input_ids_list, attention_mask_list):
-        pad_len = max_seq_len - input_ids.shape[0]
-
-        padded_input_ids = torch.cat(
-            [
-                input_ids,
-                torch.full(
-                    (pad_len,), PAD_ID, dtype=input_ids.dtype, device=input_ids.device
-                ),
-            ]
-        )
-
-        padded_attention_mask = torch.cat(
-            [
-                attention_mask,
-                torch.zeros(
-                    pad_len, dtype=attention_mask.dtype, device=attention_mask.device
-                ),
-            ]
-        )
-
-        batch_input_ids.append(padded_input_ids)
-        batch_attention_mask.append(padded_attention_mask)
+    batch_attention_mask = pad_sequence(
+        attention_mask_list, batch_first=True, padding_value=0
+    )
 
     collated_batch = {
-        "input_ids": torch.stack(batch_input_ids),
-        "attention_mask": torch.stack(batch_attention_mask),
+        "input_ids": batch_input_ids,
+        "attention_mask": batch_attention_mask,
     }
 
     return collated_batch
