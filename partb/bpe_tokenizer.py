@@ -3,7 +3,7 @@ import json
 
 
 class BPETokenizer:
-    def __init__(self, vocab_size=None, special_tokens=None):
+    def __init__(self, vocab_size=1000, special_tokens=None):
         self.vocab_size = vocab_size
         if special_tokens is None:
             special_tokens = ["<|PAD|>", "<|UNK|>", "<|SOS|>", "<|EOS|>"]
@@ -21,15 +21,18 @@ class BPETokenizer:
 
     def cons_full_vocab(self, corpus):
         curr_id = len(self.token_to_id)
+        chars = set()
 
         for sentence in corpus:
             for char in sentence:
-                if char == " ":
-                    continue
-                if char not in self.token_to_id:
-                    self.token_to_id[char] = curr_id
-                    self.id_to_token[curr_id] = char
-                    curr_id += 1
+                if char != " ":
+                    chars.add(char)
+
+        for char in sorted(chars):
+            if char not in self.token_to_id:
+                self.token_to_id[char] = curr_id
+                self.id_to_token[curr_id] = char
+                curr_id += 1
 
     def fill_word_freqs(self, corpus, word_freqs):
         for sentence in corpus:
