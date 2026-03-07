@@ -1,19 +1,24 @@
 import os
 import json
+import string
 
 
 class BPETokenizer:
     def __init__(self, vocab_size=1000, special_tokens=None):
         self.vocab_size = vocab_size
-        if special_tokens is None:
-            special_tokens = ["<|PAD|>", "<|UNK|>", "<|SOS|>", "<|EOS|>"]
+        main_special_tokens = ["<|PAD|>", "<|UNK|>", "<|SOS|>", "<|EOS|>"]
 
-        self.special_tokens = special_tokens
+        if special_tokens is None:
+            self.special_tokens = main_special_tokens
+        else:
+            extra = [t for t in special_tokens if t not in main_special_tokens]
+            self.special_tokens = main_special_tokens + extra
+
         self.eow_token = "<|w|>"
         self.token_to_id = {}
         self.id_to_token = {}
 
-        for id, token in enumerate(special_tokens + [self.eow_token]):
+        for id, token in enumerate(self.special_tokens + [self.eow_token]):
             self.token_to_id[token] = id
             self.id_to_token[id] = token
 
@@ -21,7 +26,10 @@ class BPETokenizer:
 
     def cons_full_vocab(self, corpus):
         curr_id = len(self.token_to_id)
-        chars = set()
+        chars = set(string.printable) - {" ", "\t", "\n", "\r", "\x0b", "\x0c"}
+
+        for cp in range(0x0900, 0x0980):
+            chars.add(chr(cp))
 
         for sentence in corpus:
             for char in sentence:
@@ -36,7 +44,7 @@ class BPETokenizer:
 
     def fill_word_freqs(self, corpus, word_freqs):
         for sentence in corpus:
-            words = sentence.split()
+            words = sentence.split(" ")
             for word in words:
                 word_tuple = tuple(word) + (self.eow_token,)
 
@@ -107,7 +115,7 @@ class BPETokenizer:
     def encode(self, text):
         tokens = [self.token_to_id["<|SOS|>"]]
 
-        words = text.split()
+        words = text.split(" ")
         for word in words:
             word_tuple = tuple(word) + (self.eow_token,)
             for rule in self.merge_rules:
@@ -147,13 +155,14 @@ class BPETokenizer:
         sentence = "".join(tokens)
         sentence = sentence.replace(self.eow_token, " ")
 
-        return sentence.rstrip()
+        return sentence[:-1]
 
     def save(self, filepath):
         os.makedirs(filepath, exist_ok=True)
         save_path = os.path.join(filepath, "bpe_tokenizer.json")
 
         save_data = {
+            "vocab_size": self.vocab_size,
             "special_tokens": self.special_tokens,
             "eow_token": self.eow_token,
             "token_to_id": self.token_to_id,
