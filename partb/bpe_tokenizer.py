@@ -26,7 +26,7 @@ class BPETokenizer:
 
     def cons_full_vocab(self, corpus):
         curr_id = len(self.token_to_id)
-        chars = set(string.printable) - {" ", "\t", "\n", "\r", "\x0b", "\x0c"}
+        chars = set(string.printable) - {" ", "\x0b", "\x0c"}
 
         for cp in range(0x0900, 0x0980):
             chars.add(chr(cp))
