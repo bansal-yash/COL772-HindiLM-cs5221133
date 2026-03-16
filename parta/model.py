@@ -78,9 +78,10 @@ class Feed_Forward_Network(nn.Module):
         self.up = nn.Linear(d_model, hidden_dim, bias=True)
         self.down = nn.Linear(hidden_dim, d_model, bias=True)
         self.gelu = nn.GELU()
+        self.dropout = nn.Dropout(0.1)
 
     def forward(self, x):
-        return self.down(self.gelu(self.up(x)))
+        return self.dropout(self.down(self.gelu(self.up(x))))
 
 
 class Multi_Head_Attention(nn.Module):
@@ -99,6 +100,9 @@ class Multi_Head_Attention(nn.Module):
 
         causal = torch.tril(torch.ones(MAX_SEQ_LEN, MAX_SEQ_LEN, dtype=torch.bool))
         self.register_buffer("causal_mask", causal)
+
+        self.attention_dropout = nn.Dropout(0.1)
+        self.value_dropout = nn.Dropout(0.1)
 
     def forward(self, x, attention_mask):
         B, T, _ = x.shape
@@ -127,11 +131,13 @@ class Multi_Head_Attention(nn.Module):
         s = s.masked_fill(pad_mask == 0, -torch.inf)
 
         attention = torch.softmax(s, dim=-1)
+        attention = self.attention_dropout(attention)
 
         v = torch.matmul(attention, v)
         v = v.transpose(1, 2).reshape(B, T, self.d_model)
         v = self.o_mat(v)
         v = v * pad_mask.squeeze(1).transpose(-1, -2).float()
+        v = self.value_dropout(v)
 
         return v
 
@@ -196,6 +202,7 @@ class LanguageModel(nn.Module):
         )
 
         self.final_layer_norm = nn.LayerNorm(self.d_model, elementwise_affine=True)
+        self.dropout = nn.Dropout(0.1)
 
     def set_weights(self, weights: Dict[str, Any]):
         """
@@ -270,6 +277,7 @@ class LanguageModel(nn.Module):
         x = self.vocab_embedding(input_ids)
 
         x = x + self.positional_encoding(input_ids)
+        x = self.dropout(x)
 
         for transfomer_block in self.transformer_blocks:
             x = transfomer_block(x, attention_mask)

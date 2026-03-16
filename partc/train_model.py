@@ -50,7 +50,7 @@ CONFIG = {
 TRAIN_BATCH_SIZE = 8
 VAL_BATCH_SIZE = 16
 LR = 1e-4
-NUM_EPOCHS = 10
+NUM_EPOCHS = 15
 
 
 def encode_sentence(args):
