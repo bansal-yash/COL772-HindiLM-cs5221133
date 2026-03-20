@@ -1,9 +1,6 @@
 import torch
 import torch.nn as nn
-from torch.nn.utils.rnn import pad_sequence
-from typing import Any, Dict, List
-
-MAX_SEQ_LEN = 512
+from typing import Any, Dict
 
 
 class Vocab_Embedding(nn.Module):
@@ -27,47 +24,21 @@ class Vocab_Unembedding(nn.Module):
 
 
 class Positional_Encoding(nn.Module):
-    def __init__(self, d_model):
+    def __init__(self, d_head):
         super().__init__()
-        self.max_len = MAX_SEQ_LEN
-        self.d_model = d_model
+        self.d_head = d_head
+        inv_freq = 1.0 / (10000 ** (torch.arange(0, d_head, 2).float() / d_head))
+        self.register_buffer("inv_freq", inv_freq)
 
-        position_encodings = torch.zeros((self.max_len, d_model))
-        positions = torch.arange(0, self.max_len).unsqueeze(1)
+    def forward(self, T, device):
+        t = torch.arange(T, device=device).float()
+        freqs = torch.outer(t, self.inv_freq)
+        return torch.cat([freqs, freqs], dim=-1)
 
-        base = torch.tensor(10000.0)
-        two_i = torch.arange(0, d_model, 2)
-        base_pow_2i_by_d = torch.exp(-(two_i / d_model) * (torch.log(base)))
 
-        pos_into_exp = positions * base_pow_2i_by_d
-        position_encodings[:, 0::2] = torch.sin(pos_into_exp)
-        position_encodings[:, 1::2] = torch.cos(pos_into_exp)
-
-        position_encodings = position_encodings.unsqueeze(0)
-
-        self.register_buffer("position_encodings", position_encodings)
-
-    def forward(self, input_ids: torch.Tensor):
-        s = input_ids.shape[1]
-
-        if s > self.max_len:
-            positional_encodings = torch.zeros(
-                (s, self.d_model), device=input_ids.device
-            )
-            positions = torch.arange(0, s, device=input_ids.device).unsqueeze(1)
-
-            base = torch.tensor(10000.0, device=input_ids.device)
-            two_i = torch.arange(0, self.d_model, 2, device=input_ids.device)
-            base_pow_2i_by_d = torch.exp(-(two_i / self.d_model) * (torch.log(base)))
-
-            pos_into_exp = positions * base_pow_2i_by_d
-            positional_encodings[:, 0::2] = torch.sin(pos_into_exp)
-            positional_encodings[:, 1::2] = torch.cos(pos_into_exp)
-
-            positional_encodings = positional_encodings.unsqueeze(0)
-            return positional_encodings
-
-        return self.position_encodings[:, :s]
+def rotate_half(x):
+    x1, x2 = x.chunk(2, dim=-1)
+    return torch.cat([-x2, x1], dim=-1)
 
 
 class Feed_Forward_Network(nn.Module):
@@ -78,10 +49,11 @@ class Feed_Forward_Network(nn.Module):
         self.up = nn.Linear(d_model, hidden_dim, bias=True)
         self.down = nn.Linear(hidden_dim, d_model, bias=True)
         self.gelu = nn.GELU()
-        self.dropout = nn.Dropout(0.1)
+        self.dropout = nn.Dropout(0.3)
+        self.ffn_norm = nn.LayerNorm(hidden_dim)
 
     def forward(self, x):
-        return self.dropout(self.down(self.gelu(self.up(x))))
+        return self.dropout(self.down(self.ffn_norm(self.gelu(self.up(x)))))
 
 
 class Multi_Head_Attention(nn.Module):
@@ -98,11 +70,13 @@ class Multi_Head_Attention(nn.Module):
         self.o_mat = nn.Linear(d_model, d_model, bias=False)
         self.qkv_mat = nn.Linear(d_model, 3 * d_model, bias=False)
 
-        causal = torch.tril(torch.ones(MAX_SEQ_LEN, MAX_SEQ_LEN, dtype=torch.bool))
-        self.register_buffer("causal_mask", causal)
+        self.rope = Positional_Encoding(d_head)
 
-        self.attention_dropout = nn.Dropout(0.1)
-        self.value_dropout = nn.Dropout(0.1)
+        self.q_norm = nn.LayerNorm(d_head, elementwise_affine=True)
+        self.k_norm = nn.LayerNorm(d_head, elementwise_affine=True)
+        self.v_norm = nn.LayerNorm(d_head, elementwise_affine=True)
+
+        self.attention_dropout = nn.Dropout(0.3)
 
     def forward(self, x, attention_mask):
         B, T, _ = x.shape
@@ -113,17 +87,19 @@ class Multi_Head_Attention(nn.Module):
         k = k.view(B, T, self.n_heads, self.d_head).transpose(1, 2)
         v = v.view(B, T, self.n_heads, self.d_head).transpose(1, 2)
 
+        freqs = self.rope(T, x.device)
+        cos = freqs.cos()[None, None, :, :]
+        sin = freqs.sin()[None, None, :, :]
+        q = self.q_norm(q * cos + rotate_half(q) * sin)
+        k = self.k_norm(k * cos + rotate_half(k) * sin)
+        v = self.v_norm(v)
+
         s = torch.matmul(q, k.transpose(-2, -1)) / self.d_head ** (1 / 2)
 
         if self.tanh_clip:
             s = self.tau * torch.tanh(s)
 
-        if T > MAX_SEQ_LEN:
-            causal_mask = torch.tril(
-                torch.ones(T, T, dtype=torch.bool, device=x.device)
-            )
-        else:
-            causal_mask = self.causal_mask[:T, :T]
+        causal_mask = torch.tril(torch.ones(T, T, dtype=torch.bool, device=x.device))
 
         s = s.masked_fill(causal_mask == 0, -torch.inf)
 
@@ -137,7 +113,6 @@ class Multi_Head_Attention(nn.Module):
         v = v.transpose(1, 2).reshape(B, T, self.d_model)
         v = self.o_mat(v)
         v = v * pad_mask.squeeze(1).transpose(-1, -2).float()
-        v = self.value_dropout(v)
 
         return v
 
@@ -190,8 +165,6 @@ class LanguageModel(nn.Module):
         self.vocab_embedding = Vocab_Embedding(self.vocab_size, self.d_model)
         self.vocab_unembedding = Vocab_Unembedding(self.vocab_size, self.d_model)
 
-        self.positional_encoding = Positional_Encoding(self.d_model)
-
         self.transformer_blocks = nn.ModuleList(
             [
                 Transformer_Block(
@@ -202,62 +175,7 @@ class LanguageModel(nn.Module):
         )
 
         self.final_layer_norm = nn.LayerNorm(self.d_model, elementwise_affine=True)
-        self.dropout = nn.Dropout(0.1)
-
-    def set_weights(self, weights: Dict[str, Any]):
-        """
-        Set the model's weights based on the provided dictionary.
-        The weights dictionary will contain all necessary parameters to initialize the model's layers.
-        You should ensure that the weights are correctly assigned to the corresponding layers in your model.
-
-        Parameters:
-            - weights: A dictionary containing the model's weights. The structure of this dictionary will depend on how you design your model.
-        """
-
-        with torch.no_grad():
-            self.vocab_embedding.vocab_embed.weight.copy_(
-                weights["W_vocab"].T.contiguous()
-            )
-            self.vocab_unembedding.vocab_unembed.weight.copy_(
-                weights["W_devocab"].T.contiguous()
-            )
-
-            self.final_layer_norm.weight.copy_(weights["gamma_final"])
-            self.final_layer_norm.bias.copy_(weights["beta_final"])
-
-            for i in range(1, self.n_layers + 1):
-                transformer_block = self.transformer_blocks[i - 1]
-                transformer_block.layer_norm1.weight.copy_(weights[f"gamma_{i}_1"])
-                transformer_block.layer_norm1.bias.copy_(weights[f"beta_{i}_1"])
-                transformer_block.layer_norm2.weight.copy_(weights[f"gamma_{i}_2"])
-                transformer_block.layer_norm2.bias.copy_(weights[f"beta_{i}_2"])
-
-                transformer_block.ffn.up.weight.copy_(weights[f"W_{i}_up"].T)
-                transformer_block.ffn.up.bias.copy_(weights[f"b_{i}_up"])
-                transformer_block.ffn.down.weight.copy_(weights[f"W_{i}_down"].T)
-                transformer_block.ffn.down.bias.copy_(weights[f"b_{i}_down"])
-
-                all_o_weights = weights[f"W_{i}_O"]
-                transformer_block.multi_head_attention.o_mat.weight.copy_(
-                    all_o_weights.T
-                )
-
-                all_q_weights = torch.cat(
-                    [weights[f"W_{i}_Q_{h}"] for h in range(1, self.n_heads + 1)], dim=0
-                ).T
-                all_k_weights = torch.cat(
-                    [weights[f"W_{i}_K_{h}"] for h in range(1, self.n_heads + 1)], dim=0
-                ).T
-                all_v_weights = torch.cat(
-                    [weights[f"W_{i}_V_{h}"] for h in range(1, self.n_heads + 1)], dim=0
-                ).T
-                all_qkv_weights = torch.cat(
-                    [all_q_weights, all_k_weights, all_v_weights], dim=0
-                )
-
-                transformer_block.multi_head_attention.qkv_mat.weight.copy_(
-                    all_qkv_weights
-                )
+        self.dropout = nn.Dropout(0.3)
 
     def forward(
         self, input_ids: torch.Tensor, attention_mask: torch.Tensor
@@ -276,7 +194,6 @@ class LanguageModel(nn.Module):
 
         x = self.vocab_embedding(input_ids)
 
-        x = x + self.positional_encoding(input_ids)
         x = self.dropout(x)
 
         for transfomer_block in self.transformer_blocks:
@@ -287,43 +204,3 @@ class LanguageModel(nn.Module):
         logits = self.vocab_unembedding(x)
 
         return logits
-
-
-def load_model(config: Dict[str, Any], weights: Dict[str, Any]):
-    """
-    This is a sample code. Replace with your own.
-    However, DO NOT CHANGE THE SIGNATURE OF THIS FUNCTION.
-    Ensure that the function inputs config and weights and outputs a nn.Module derived object.
-    """
-
-    model = LanguageModel(config)
-    model.set_weights(weights)
-
-    return model
-
-
-def collate_fn(batch: Dict[str, List[torch.tensor]]) -> Dict[str, torch.Tensor]:
-    """
-    This is a sample code. Replace with your own.
-    However, DO NOT CHANGE THE SIGNATURE OF THIS FUNCTION.
-    Ensure that the function takes in a batch of data and outputs a dictionary of tensors ready to be fed into the model.
-    """
-    PAD_ID = 0  # Assume 0 is the padding token ID
-
-    input_ids_list = batch["input_ids"]
-    attention_mask_list = batch["attention_mask"]
-
-    batch_input_ids = pad_sequence(
-        input_ids_list, batch_first=True, padding_value=PAD_ID
-    )
-
-    batch_attention_mask = pad_sequence(
-        attention_mask_list, batch_first=True, padding_value=0
-    )
-
-    collated_batch = {
-        "input_ids": batch_input_ids,
-        "attention_mask": batch_attention_mask,
-    }
-
-    return collated_batch

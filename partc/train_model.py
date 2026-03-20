@@ -1,17 +1,17 @@
 # YOUR TOKENIZER AND MODEL from PART A AND PART B RESPECTIVELY
 # If you wish to change their code, please do so in their respective files under parta/ and partb/ directories.
 import os
+import json
 import random
 import numpy as np
 import torch
-import matplotlib.pyplot as plt
 from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
 import math
 from multiprocessing import Pool
 
 from partb.bpe_tokenizer import BPETokenizer
-from parta.model import LanguageModel, MAX_SEQ_LEN
+from parta.model import LanguageModel
 
 # You can also create additional files in this directory and import them here if needed.
 # For example, the line below import a dummy function from utils.py file.
@@ -40,17 +40,18 @@ torch.backends.cudnn.benchmark = False
 
 # All the Hyperparameters of the model
 CONFIG = {
-    "d_model": 2048,
-    "n_heads": 16,
+    "d_model": 1024,
+    "n_heads": 8,
     "d_head": 128,
     "n_layers": 8,
     "mode": "standard",
 }
 
-TRAIN_BATCH_SIZE = 8
-VAL_BATCH_SIZE = 16
+TRAIN_BATCH_SIZE = 16
+VAL_BATCH_SIZE = 32
 LR = 1e-4
-NUM_EPOCHS = 15
+NUM_EPOCHS = 30
+MAX_TRAIN_SEQ_LEN = 256
 
 
 def encode_sentence(args):
@@ -60,15 +61,19 @@ def encode_sentence(args):
 
 
 class LMDataset(Dataset):
-    def __init__(self, corpus, tokenizer):
-        self.seq_len = MAX_SEQ_LEN
+    def __init__(self, corpus, tokenizer, is_train):
+        self.seq_len = MAX_TRAIN_SEQ_LEN
+        self.tokenizer = tokenizer
+        self.is_train = is_train
         self.all_tokens = []
 
         with Pool(processes=os.cpu_count()) as pool:
             results = list(
                 tqdm(
                     pool.imap(
-                        encode_sentence, [(s, tokenizer) for s in corpus], chunksize=32
+                        encode_sentence,
+                        [(s, tokenizer) for s in corpus],
+                        chunksize=1024,
                     ),
                     total=len(corpus),
                 )
@@ -83,23 +88,57 @@ class LMDataset(Dataset):
         offset = random.randint(0, self.seq_len - 1)
         tokens = self.all_tokens[offset:]
         self.chunks = []
+        self.char_counts = []
+
+        unk_id = self.tokenizer.get_unk_id()
+        special = {
+            0,
+            unk_id,
+            self.tokenizer.token_to_id["<|SOS|>"],
+            self.tokenizer.token_to_id["<|EOS|>"],
+        }
+
         for i in range(0, len(tokens) - self.seq_len, self.seq_len):
-            chunk = tokens[i : i + self.seq_len + 1]
-            self.chunks.append(torch.tensor(chunk, dtype=torch.long))
+            original_chunk = tokens[i : i + self.seq_len + 1]
+            decoded = self.tokenizer.decode(original_chunk[:-1])
+            self.char_counts.append(len(decoded))
+
+            if self.is_train:
+                input_chunk = [
+                    (
+                        unk_id
+                        if (
+                            t not in special
+                            and random.random() < 1 / self.tokenizer.get_vocab_size()
+                        )
+                        else t
+                    )
+                    for t in original_chunk[:-1]
+                ]
+                label_chunk = list(original_chunk[1:])
+            else:
+                input_chunk = list(original_chunk[:-1])
+                label_chunk = list(original_chunk[1:])
+
+            self.chunks.append(
+                (
+                    torch.tensor(input_chunk, dtype=torch.long),
+                    torch.tensor(label_chunk, dtype=torch.long),
+                )
+            )
 
     def __len__(self):
         return len(self.chunks)
 
     def __getitem__(self, index):
-        chunk = self.chunks[index]
-        input_ids = chunk[:-1]
-        labels = chunk[1:]
+        input_ids, labels = self.chunks[index]
         attention_mask = torch.ones_like(input_ids)
 
         return {
             "input_ids": input_ids,
             "labels": labels,
             "attention_mask": attention_mask,
+            "total_chars": self.char_counts[index],
         }
 
 
@@ -107,8 +146,16 @@ def new_collate_fn(batch):
     input_ids = torch.stack([item["input_ids"] for item in batch])
     labels = torch.stack([item["labels"] for item in batch])
     attention_mask = torch.stack([item["attention_mask"] for item in batch])
+    total_chars = torch.tensor(
+        [item["total_chars"] for item in batch], dtype=torch.long
+    )
 
-    return {"input_ids": input_ids, "labels": labels, "attention_mask": attention_mask}
+    return {
+        "input_ids": input_ids,
+        "labels": labels,
+        "attention_mask": attention_mask,
+        "total_chars": total_chars,
+    }
 
 
 def train_model(
@@ -118,8 +165,8 @@ def train_model(
 
     train_losses = []
     val_losses = []
-    train_ppls = []
-    val_ppls = []
+    train_bpcs = []
+    val_bpcs = []
 
     best_val_loss = float("inf")
     scaler = torch.amp.GradScaler(device.type)
@@ -130,7 +177,8 @@ def train_model(
         model.train()
         train_loader.dataset.reshuffle()
         total_train_loss = 0
-
+        total_train_loss_sum = 0
+        total_train_chars = 0
         train_bar = tqdm(
             train_loader, desc=f"Epoch [{epoch+1}/{NUM_EPOCHS}] - Training"
         )
@@ -151,14 +199,16 @@ def train_model(
             scaler.update()
 
             total_train_loss += loss.item()
+            total_train_loss_sum += loss.item() * input_ids.numel()
+            total_train_chars += batch["total_chars"].sum().item()
 
             train_bar.set_postfix(avg_loss=total_train_loss / (train_bar.n + 1))
 
         avg_train_loss = total_train_loss / len(train_loader)
         train_losses.append(avg_train_loss)
 
-        avg_train_ppl = math.exp(avg_train_loss)
-        train_ppls.append(avg_train_ppl)
+        avg_train_bpc = total_train_loss_sum / (total_train_chars * math.log(2))
+        train_bpcs.append(avg_train_bpc)
 
         scheduler.step()
         torch.cuda.empty_cache()
@@ -166,6 +216,8 @@ def train_model(
         # Validation
         model.eval()
         total_val_loss = 0
+        total_val_loss_sum = 0
+        total_val_chars = 0
         val_bar = tqdm(val_loader, desc=f"Epoch [{epoch+1}/{NUM_EPOCHS}] - Validation")
 
         with torch.no_grad():
@@ -179,21 +231,23 @@ def train_model(
                     loss = criterion(logits.view(-1, logits.size(-1)), labels.view(-1))
 
                 total_val_loss += loss.item()
+                total_val_loss_sum += loss.item() * input_ids.numel()
+                total_val_chars += batch["total_chars"].sum().item()
 
                 val_bar.set_postfix(avg_loss=total_val_loss / (val_bar.n + 1))
 
         avg_val_loss = total_val_loss / len(val_loader)
         val_losses.append(avg_val_loss)
 
-        avg_val_ppl = math.exp(avg_val_loss)
-        val_ppls.append(avg_val_ppl)
+        avg_val_bpc = total_val_loss_sum / (total_val_chars * math.log(2))
+        val_bpcs.append(avg_val_bpc)
 
         print(
             f"\nEpoch [{epoch+1}/{NUM_EPOCHS}] | "
             f"Train Loss: {avg_train_loss:.4f} | "
-            f"Train PPL: {avg_train_ppl:.2f} | "
+            f"Train BPC: {avg_train_bpc:.4f} | "
             f"Val Loss: {avg_val_loss:.4f} | "
-            f"Val PPL: {avg_val_ppl:.2f}"
+            f"Val BPC: {avg_val_bpc:.4f}"
         )
 
         # Saving the best model
@@ -214,35 +268,18 @@ def train_model(
 
     print(f"Overall Best checkpoint val loss: {best_val_loss:4f}")
 
-    # Plot the losses
-    plt.figure()
-    plt.plot(range(1, NUM_EPOCHS + 1), train_losses, label="Train Loss")
-    plt.plot(range(1, NUM_EPOCHS + 1), val_losses, label="Val Loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.legend()
-    plt.title("Training & Validation Loss")
+    metrics = {
+        "train_losses": train_losses,
+        "val_losses": val_losses,
+        "train_bpcs": train_bpcs,
+        "val_bpcs": val_bpcs,
+    }
+    metrics_path = os.path.join(save_path, "metrics.json")
 
-    plot_path = os.path.join(save_path, "loss_plot.png")
-    plt.savefig(plot_path)
-    plt.close()
+    with open(metrics_path, "w") as f:
+        json.dump(metrics, f, indent=4)
 
-    print(f"Loss plot saved at {plot_path}")
-
-    # Plot the perplexities
-    plt.figure()
-    plt.plot(range(1, NUM_EPOCHS + 1), train_ppls, label="Train Perplexity")
-    plt.plot(range(1, NUM_EPOCHS + 1), val_ppls, label="Val Perplexity")
-    plt.xlabel("Epoch")
-    plt.ylabel("Perplexity")
-    plt.legend()
-    plt.title("Training & Validation Perplexity")
-
-    ppl_plot_path = os.path.join(save_path, "perplexity_plot.png")
-    plt.savefig(ppl_plot_path)
-    plt.close()
-
-    print(f"Perplexity plot saved at {ppl_plot_path}")
+    print(f"Metrics saved at {metrics_path}")
 
 
 def main(args):
@@ -273,8 +310,8 @@ def main(args):
     print(CONFIG)
 
     print("Creating datasets and dataloaders")
-    train_dataset = LMDataset(train_corpus, tokenizer)
-    val_dataset = LMDataset(val_corpus, tokenizer)
+    train_dataset = LMDataset(train_corpus, tokenizer, is_train=True)
+    val_dataset = LMDataset(val_corpus, tokenizer, is_train=False)
 
     train_loader = DataLoader(
         dataset=train_dataset,

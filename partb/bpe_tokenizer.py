@@ -1,12 +1,11 @@
 import os
 import json
-import string
 from collections import defaultdict
 from tqdm import tqdm
 
 
 class BPETokenizer:
-    def __init__(self, vocab_size=1000, special_tokens=None):
+    def __init__(self, vocab_size=6000, special_tokens=None):
         self.vocab_size = vocab_size
         main_special_tokens = ["<|PAD|>", "<|UNK|>", "<|SOS|>", "<|EOS|>"]
 
@@ -29,10 +28,7 @@ class BPETokenizer:
 
     def cons_full_vocab(self, corpus):
         curr_id = len(self.token_to_id)
-        chars = set(string.printable) - {" ", "\x0b", "\x0c"}
-
-        for cp in range(0x0900, 0x0980):
-            chars.add(chr(cp))
+        chars = set()
 
         for sentence in corpus:
             for char in sentence:
