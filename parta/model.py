@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
-from typing import Any, Dict
+from torch.nn.utils.rnn import pad_sequence
+from typing import Any, Dict, List
 
 
 class Vocab_Embedding(nn.Module):
@@ -204,3 +205,30 @@ class LanguageModel(nn.Module):
         logits = self.vocab_unembedding(x)
 
         return logits
+
+
+def collate_fn(batch: Dict[str, List[torch.tensor]]) -> Dict[str, torch.Tensor]:
+    """
+    This is a sample code. Replace with your own.
+    However, DO NOT CHANGE THE SIGNATURE OF THIS FUNCTION.
+    Ensure that the function takes in a batch of data and outputs a dictionary of tensors ready to be fed into the model.
+    """
+    PAD_ID = 0  # Assume 0 is the padding token ID
+
+    input_ids_list = batch["input_ids"]
+    attention_mask_list = batch["attention_mask"]
+
+    batch_input_ids = pad_sequence(
+        input_ids_list, batch_first=True, padding_value=PAD_ID
+    )
+
+    batch_attention_mask = pad_sequence(
+        attention_mask_list, batch_first=True, padding_value=0
+    )
+
+    collated_batch = {
+        "input_ids": batch_input_ids,
+        "attention_mask": batch_attention_mask,
+    }
+
+    return collated_batch
