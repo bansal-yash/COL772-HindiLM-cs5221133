@@ -255,10 +255,7 @@ def train_model(
             best_val_loss = avg_val_loss
 
             checkpoint = {
-                "epoch": epoch + 1,
                 "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "best_val_loss": best_val_loss,
                 "config": CONFIG,
             }
 
